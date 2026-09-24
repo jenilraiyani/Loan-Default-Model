@@ -15,14 +15,54 @@ def load_joblib(filename):
         return None
     return joblib.load(path)
 
-logistic_model = load_joblib('logistic_model.pkl') or load_joblib('loan_model.pkl')
-rf_model = load_joblib('rf_model.pkl') or load_joblib('loan_model.pkl')
+MODELS = {
+    'logistic': {
+        'name': 'Logistic Regression',
+        'response_key': 'logistic_regression',
+        'model': load_joblib('logistic_model.pkl') or load_joblib('loan_model.pkl'),
+    },
+    'decision_tree': {
+        'name': 'Decision Tree',
+        'response_key': 'decision_tree',
+        'model': load_joblib('decision_tree_model.pkl'),
+    },
+    'naive_bayes': {
+        'name': 'Naive Bayes',
+        'response_key': 'naive_bayes',
+        'model': load_joblib('naive_bayes_model.pkl'),
+    },
+    'random_forest': {
+        'name': 'Random Forest',
+        'response_key': 'random_forest',
+        'model': load_joblib('rf_model.pkl') or load_joblib('loan_model.pkl'),
+    },
+    'adaboost': {
+        'name': 'AdaBoost',
+        'response_key': 'adaboost',
+        'model': load_joblib('adaboost_model.pkl'),
+    },
+}
+
 scaler = load_joblib('scaler.pkl')
 le = load_joblib('label_encoder.pkl')
 
-print('Logistic:', type(logistic_model).__name__ if logistic_model is not None else 'MISSING')
-print('Random Forest:', type(rf_model).__name__ if rf_model is not None else 'MISSING')
+for key, meta in MODELS.items():
+    loaded = meta['model'] is not None
+    print(f"{meta['name']}: {type(meta['model']).__name__ if loaded else 'MISSING'}")
 print('Scaler:', 'loaded' if scaler is not None else 'MISSING')
+
+ALIASES = {
+    'logisticregression': 'logistic',
+    'lr': 'logistic',
+    'rf': 'random_forest',
+    'randomforest': 'random_forest',
+    'dt': 'decision_tree',
+    'decisiontree': 'decision_tree',
+    'nb': 'naive_bayes',
+    'naivebayes': 'naive_bayes',
+    'ada': 'adaboost',
+    'both': 'all',
+}
 
 @app.route('/')
 def home():
@@ -47,13 +87,12 @@ def predict():
             return jsonify({'success': False, 'error': 'scaler.pkl is missing in the backend folder'}), 400
 
         data = request.get_json() or {}
-        model_choice = str(data.pop('model', 'both')).strip().lower().replace('-', '_')
-        if model_choice in ('logisticregression', 'lr'):
-            model_choice = 'logistic'
-        if model_choice in ('rf', 'randomforest'):
-            model_choice = 'random_forest'
-        if model_choice not in ('logistic', 'random_forest', 'both'):
-            model_choice = 'both'
+        model_choice = str(data.pop('model', 'all')).strip().lower().replace('-', '_').replace(' ', '_')
+        model_choice = ALIASES.get(model_choice, model_choice)
+
+        valid = set(MODELS.keys()) | {'all'}
+        if model_choice not in valid:
+            model_choice = 'all'
 
         df_input = pd.DataFrame([data])
         df_input.columns = df_input.columns.str.strip().str.lower().str.replace(' ', '_')
@@ -80,30 +119,26 @@ def predict():
 
         df_input[numeric_cols] = scaler.transform(df_input[numeric_cols])
 
+        selected_keys = list(MODELS.keys()) if model_choice == 'all' else [model_choice]
         response = {
             'success': True,
             'selected_model': model_choice
         }
 
-        if model_choice in ('logistic', 'both'):
-            if logistic_model is None:
-                return jsonify({'success': False, 'error': 'logistic_model.pkl not found'}), 400
-            logistic_result = make_prediction(logistic_model, df_input)
-            response['logistic_regression'] = {
-                'name': 'Logistic Regression',
-                **logistic_result
-            }
+        primary = None
+        for key in selected_keys:
+            meta = MODELS[key]
+            if meta['model'] is None:
+                return jsonify({'success': False, 'error': f"{meta['name']} model file not found"}), 400
+            result = make_prediction(meta['model'], df_input)
+            payload = {'name': meta['name'], **result}
+            response[meta['response_key']] = payload
+            primary = payload
 
-        if model_choice in ('random_forest', 'both'):
-            if rf_model is None:
-                return jsonify({'success': False, 'error': 'rf_model.pkl not found'}), 400
-            rf_result = make_prediction(rf_model, df_input)
-            response['random_forest'] = {
-                'name': 'Random Forest',
-                **rf_result
-            }
+        # Prefer Random Forest as primary when comparing all
+        if model_choice == 'all' and 'random_forest' in response:
+            primary = response['random_forest']
 
-        primary = response.get('random_forest') or response.get('logistic_regression')
         response['prediction'] = primary['prediction']
         response['risk_status'] = primary['risk_status']
         return jsonify(response)
